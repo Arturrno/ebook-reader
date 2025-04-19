@@ -1,0 +1,458 @@
+#!/usr/bin/env python3 
+import os
+import sys
+import time
+import zipfile
+import textwrap
+from bs4 import BeautifulSoup
+from PIL import Image, ImageDraw, ImageFont
+import platform
+
+# Set up e-paper display
+if platform.system() == "Windows":
+    from mock_epd import MockEPD as EPD
+    epd = EPD()
+    runningDir = os.path.dirname(os.path.abspath(__file__))
+    bookshelfPath = os.path.join(runningDir, "Bookshelf")
+else:
+    from waveshare_epd import epd7in5_V2
+    EPD = epd7in5_V2.EPD
+    epd = epd7in5_V2.EPD()
+    bookshelfPath = "/home/pi/Bookshelf"
+
+# Init
+epd.init()
+epd.Clear()
+
+# Constants
+width, height = 480, 800
+BLACK, WHITE = 0, 255
+FONT_SIZES = [18, 22, 26, 30]
+
+MENU_ITEMS = ["Czytaj książkę", "Rozmiar czcionki", "Inwersja kolorów", "Wyłącz urządzenie"]
+MENU_ITEM_HEIGHT, MENU_PADDING = 50, 10
+FM_ITEM_HEIGHT, FM_PADDING = 40, 10
+RD_STATUS_BAR_HEIGHT, RD_TOP_MARGIN = 40, 50
+RD_BOTTOM_MARGIN, RD_SIDE_MARGIN = 20, 20
+RD_LINE_SPACING, RD_CHARS_PER_LINE = 8, 40
+
+settings = {'font_id': 1, 'inverted': False, 'last_book': None}
+
+fonts = {}
+
+fontPath = os.path.join(runningDir, "DejaVuSans.ttf")
+if not os.path.exists(fontPath):
+    print(f"Font file not found: {fontPath}")
+    sys.exit(1)
+
+for i, size in enumerate(FONT_SIZES):
+    try:
+        fonts[i] = ImageFont.truetype(fontPath, size)
+    except:
+        fonts[i] = ImageFont.load_default()
+try:
+    status_font = ImageFont.truetype(fontPath, 14)
+except:
+    status_font = ImageFont.load_default()
+
+# Base screen with shared display logic
+class Screen:
+    def __init__(self, app):
+        self.app = app
+
+    def update_display(self, image, partial=False):
+        if partial:
+            self.app.epd.init_part()
+        else:
+            self.app.epd.init()
+
+        if settings['inverted']:
+            image = Image.eval(image, lambda x: 255 - x)
+
+        rotated_image = image.rotate(0)
+        self.app.epd.display(self.app.epd.getbuffer(rotated_image))
+
+    def draw_top_bar(self, image, screen_name=""):
+        draw = ImageDraw.Draw(image)
+        bar_height = 30
+        padding = 10
+        font = fonts[settings['font_id']]
+        bold_font = fonts.get("bold", font)  # fallback if bold not defined
+
+        # Font metrics for vertical centering
+        ascent, descent = font.getmetrics()
+        text_height = ascent + abs(descent)
+
+        # Battery
+        battery_pct = 73  # Example battery percentage
+        battery_text = f"{battery_pct}%"
+        battery_text_width = draw.textlength(battery_text, font=bold_font)
+        battery_logo_width = 20
+        battery_logo_height = 12
+        battery_y = (bar_height - battery_logo_height) // 2
+        battery_x = width - padding - battery_logo_width - battery_text_width - 8
+
+        # Battery percentage text
+        draw.text((battery_x, ((bar_height - text_height) // 2) + 1), battery_text, font=bold_font, fill=BLACK)
+
+        # Battery icon
+        icon_x = battery_x + battery_text_width + 5
+        batt_top = battery_y
+        batt_left = icon_x
+        batt_right = icon_x + battery_logo_width
+        batt_bottom = battery_y + battery_logo_height
+
+        # Battery outline
+        draw.rectangle((batt_left, batt_top, batt_right, batt_bottom), outline=BLACK, width=1)
+
+        # Battery fill (based on %)
+        fill_margin = 2
+        fill_left = batt_left + fill_margin
+        fill_right = batt_right - fill_margin
+        fill_top = batt_top + fill_margin
+        fill_bottom = batt_bottom - fill_margin
+
+        fill_width = int((fill_right - fill_left) * (battery_pct / 100))
+        if fill_width > 0:
+            draw.rectangle((fill_left, fill_top, fill_left + fill_width, fill_bottom), fill=BLACK)
+
+        # Battery tip
+        draw.rectangle((batt_right, batt_top + 3, batt_right + 3, batt_bottom - 3), fill=BLACK)
+
+
+        # Wi-Fi signal bars (empty outline)
+        wifi_x = battery_x - 45
+        wifi_bar_width = 3
+        wifi_bar_height = 18
+        wifi_y_top = (battery_y + batt_bottom - wifi_bar_height)/2
+        wifi_spacing = 2
+
+        # Draw the outline for each of the 4 Wi-Fi bars
+        for i in range(4):
+            bar_x = wifi_x + i * (wifi_bar_width + wifi_spacing)
+            bar_top = wifi_y_top + ((3 - i) / 4) * wifi_bar_height
+            bar_bottom = wifi_y_top + wifi_bar_height
+            draw.rectangle((bar_x, bar_top, bar_x + wifi_bar_width, bar_bottom), outline=BLACK, width=1)
+
+        # Fill Wi-Fi bars based on signal strength
+        signal_strength = 77  # This will need to return signal strength (0-100%)
+        filled_bars = int(signal_strength / 25)  # Split signal strength into 4 parts
+
+        for i in range(filled_bars):
+            bar_x = wifi_x + i * (wifi_bar_width + wifi_spacing)
+            bar_top = wifi_y_top + ((3 - i) / 4) * wifi_bar_height
+            bar_bottom = wifi_y_top + wifi_bar_height
+            draw.rectangle((bar_x, bar_top, bar_x + wifi_bar_width, bar_bottom), fill=BLACK)
+
+        # Screen title (left aligned)
+        title_text = screen_name
+        draw.text((padding, (bar_height - text_height) // 2), title_text, font=font, fill=BLACK)
+
+        # Separator line
+        draw.line((0, bar_height, width, bar_height), fill=BLACK)
+
+
+class StartupAnimationScreen(Screen):
+    def __init__(self, app):
+        super().__init__(app)
+
+    def run(self):
+        # Load and resize logo image
+        logo = Image.open(os.path.join(runningDir,"logo.png")).convert('1')
+        base_image = logo.resize((width, height))
+
+        self.update_display(base_image, True)
+
+        time.sleep(1)
+        self.update_display(self.app.empty_image, partial=False)
+
+# Menus
+class MenuScreen(Screen):
+    def handle_input(self, key): pass
+    def run(self): pass
+
+class MainMenu(MenuScreen):
+    def __init__(self, app):
+        super().__init__(app)
+        self.selected_idx = 0
+
+    def get_menu_image(self):
+        image = self.app.empty_image.copy()
+        draw = ImageDraw.Draw(image)
+
+        # Draw the top bar with screen name
+        self.draw_top_bar(image, screen_name="Menu")
+
+        # Shift content down below the top bar
+        y_offset = MENU_PADDING + 30  # Add space for top bar
+
+        start = max(0, self.selected_idx - self.visible_items() // 2)
+        end = min(len(MENU_ITEMS), start + self.visible_items())
+
+        for i in range(start, end):
+            if i == self.selected_idx:
+                draw.rectangle((MENU_PADDING, y_offset, width - MENU_PADDING, y_offset + MENU_ITEM_HEIGHT), outline=BLACK)
+            draw.text((2*MENU_PADDING, y_offset + 15), MENU_ITEMS[i], font=fonts[settings['font_id']], fill=BLACK)
+            y_offset += MENU_ITEM_HEIGHT
+
+        return image
+
+    def visible_items(self):
+        # Adjust for the top bar
+        return (height - 2*MENU_PADDING - 30) // MENU_ITEM_HEIGHT
+
+    def handle_input(self, key):
+        if key == 'w' and self.selected_idx > 0:
+            self.selected_idx -= 1
+        elif key == 's' and self.selected_idx < len(MENU_ITEMS) - 1:
+            self.selected_idx += 1
+        elif key == '':
+            if self.selected_idx == 0:
+                self.app.current_mode = "file_manager"
+            elif self.selected_idx == 1:
+                self.app.current_mode = "font_size_menu"
+            elif self.selected_idx == 2:
+                settings['inverted'] = not settings['inverted']
+            elif self.selected_idx == 3:
+                self.app.epd.sleep()
+                sys.exit(0)
+            return True
+        return True
+
+    def run(self):
+        prev_idx = -1
+        while True:
+            if self.selected_idx != prev_idx:
+                self.update_display(self.get_menu_image(), partial=True)
+                prev_idx = self.selected_idx
+            print("\nMenu główne: [w] góra, [s] dół, [Enter] wybierz")
+            key = input("Wybierz: ")
+            if self.handle_input(key.lower().strip()):
+                break
+
+class SettingsMenu(MenuScreen):
+    def __init__(self, app):
+        super().__init__(app)
+        self.selected_idx = settings['font_id']
+
+    def get_font_size_image(self):
+        image = self.app.empty_image.copy()
+        draw = ImageDraw.Draw(image)
+        y_offset = MENU_PADDING
+        for i, size in enumerate(FONT_SIZES):
+            if i == self.selected_idx:
+                draw.rectangle((MENU_PADDING, y_offset, width - MENU_PADDING, y_offset + MENU_ITEM_HEIGHT), outline=BLACK)
+            draw.text((2*MENU_PADDING, y_offset + 15), f"Rozmiar {size}px", font=fonts[i], fill=BLACK)
+            y_offset += MENU_ITEM_HEIGHT
+        draw.text((MENU_PADDING, height - 30), "Enter: wybierz  q: powrót", font=status_font, fill=BLACK)
+        return image
+
+    def handle_input(self, key):
+        if key == 'w' and self.selected_idx > 0:
+            self.selected_idx -= 1
+        elif key == 's' and self.selected_idx < len(FONT_SIZES) - 1:
+            self.selected_idx += 1
+        elif key == '':
+            settings['font_id'] = self.selected_idx
+            self.app.current_mode = "main_menu"
+            return True
+        elif key == 'q':
+            self.app.current_mode = "main_menu"
+            return True
+        return True
+
+    def font_size_menu(self):
+        prev = -1
+        while True:
+            if self.selected_idx != prev:
+                self.update_display(self.get_font_size_image(), partial=True)
+                prev = self.selected_idx
+            print("\nWybierz rozmiar: [w/s] wybór, [Enter] zatwierdź, [q] powrót")
+            if self.handle_input(input("Wybierz: ").lower().strip()):
+                break
+
+# File manager
+class FileManager(Screen):
+    def __init__(self, app):
+        super().__init__(app)
+        self.files = self.list_ebooks(bookshelfPath)
+        self.selected_idx = 0
+
+    def list_ebooks(self, directory):
+        return sorted([f for f in os.listdir(directory) if f.lower().endswith(('.epub', '.pdf'))])
+
+    def get_file_image(self):
+        image = self.app.empty_image.copy()
+        draw = ImageDraw.Draw(image)
+        start = max(0, self.selected_idx - self.max_items() // 2)
+        end = min(len(self.files), start + self.max_items())
+        y_offset = FM_PADDING
+        for i in range(start, end):
+            if i == self.selected_idx:
+                draw.rectangle((FM_PADDING, y_offset, width - FM_PADDING, y_offset + FM_ITEM_HEIGHT), outline=BLACK)
+            name = self.files[i][:27] + "..." if len(self.files[i]) > 30 else self.files[i]
+            draw.text((2*FM_PADDING, y_offset + 10), name, font=fonts[settings['font_id']], fill=BLACK)
+            y_offset += FM_ITEM_HEIGHT
+        draw.text((FM_PADDING, height - 30), "W/S: wybierz  Enter: otwórz  q: powrót", font=status_font, fill=BLACK)
+        return image
+
+    def max_items(self):
+        return (height - 2*FM_PADDING) // FM_ITEM_HEIGHT
+
+    def handle_input(self, key):
+        if key == 'w' and self.selected_idx > 0:
+            self.selected_idx -= 1
+        elif key == 's' and self.selected_idx < len(self.files) - 1:
+            self.selected_idx += 1
+        elif key == '':
+            filepath = os.path.join(bookshelfPath, self.files[self.selected_idx])
+            settings['last_book'] = filepath
+            self.app.reader.load_epub(filepath)
+            self.app.current_mode = "reader"
+            return True
+        elif key == 'q':
+            self.app.current_mode = "main_menu"
+            return True
+        return True
+
+    def run(self):
+        prev_idx = -1
+        while True:
+            if self.selected_idx != prev_idx:
+                self.update_display(self.get_file_image(), partial=True)
+                prev_idx = self.selected_idx
+            print("\nWybierz książkę: [w/s] góra/dół, [Enter] otwórz, [q] powrót")
+            if self.handle_input(input("Wybierz: ").lower().strip()):
+                break
+
+# Reader
+class Reader(Screen):
+    def __init__(self, app):
+        super().__init__(app)
+        self.pages, self.current_page, self.total_pages = [], 0, 0
+
+    def load_epub(self, path):
+        full_text = []
+        with zipfile.ZipFile(path, 'r') as epub:
+            with epub.open('META-INF/container.xml') as f:
+                container = BeautifulSoup(f.read(), 'xml')
+                opf_path = container.rootfiles.rootfile['full-path']
+
+            opf_dir = os.path.dirname(opf_path)
+            with epub.open(opf_path) as f:
+                opf = BeautifulSoup(f.read(), 'xml')
+
+            for item in opf.find_all('item'):
+                if 'application/xhtml+xml' in item['media-type']:
+                    path_in_zip = '/'.join([opf_dir, item['href']]) if opf_dir else item['href']
+                    with epub.open(path_in_zip) as f:
+                        html = BeautifulSoup(f.read(), 'html.parser')
+                        for tag in html(['header', 'footer', 'nav', 'script', 'style']):
+                            tag.decompose()
+                        full_text.append(html.get_text())
+
+        self.pages = []
+        current, char_count = [], 0
+        line_height = FONT_SIZES[settings['font_id']] + RD_LINE_SPACING
+        lines_per_page = (height - RD_TOP_MARGIN - RD_BOTTOM_MARGIN) // line_height
+
+        for para in full_text:
+            for word in para.split():
+                if len(current) == 0 or len(current[-1]) + len(word) + 1 <= RD_CHARS_PER_LINE:
+                    if not current:
+                        current.append(word)
+                    else:
+                        current[-1] += " " + word
+                else:
+                    if len(current) >= lines_per_page:
+                        self.pages.append("\n".join(current))
+                        current, char_count = [], 0
+                    current.append(word)
+
+            if current:
+                self.pages.append("\n".join(current))
+                current = []
+
+        self.current_page = 0
+        self.total_pages = len(self.pages)
+
+    def get_page_image(self):
+        image = self.app.empty_image.copy()
+        draw = ImageDraw.Draw(image)
+        font = fonts[settings['font_id']]
+
+        # Pasek statusu
+        draw.rectangle((0, 0, width, RD_STATUS_BAR_HEIGHT), fill=WHITE, outline=BLACK)
+        page_info = f"{self.current_page+1}/{self.total_pages}"
+        draw.text((RD_SIDE_MARGIN, 10), page_info, font=status_font, fill=BLACK)
+
+        battery_info = "78%"
+        battery_width = draw.textlength(battery_info, font=status_font)
+        draw.text((width - RD_SIDE_MARGIN - battery_width, 10), battery_info, font=status_font, fill=BLACK)
+
+        progress_width = width - 2*RD_SIDE_MARGIN - draw.textlength(page_info, font=status_font) - battery_width - 20
+        progress_x = RD_SIDE_MARGIN + draw.textlength(page_info, font=status_font) + 10
+        progress = (self.current_page+1) / self.total_pages
+        draw.rectangle((progress_x, 17, progress_x + progress_width, 23), outline=BLACK)
+        draw.rectangle((progress_x, 17, progress_x + int(progress_width * progress), 23), fill=BLACK)
+
+        y = RD_TOP_MARGIN
+        for line in self.pages[self.current_page].split('\n'):
+            draw.text((RD_SIDE_MARGIN, y), line, font=font, fill=BLACK)
+            y += font.size + RD_LINE_SPACING
+        return image
+
+    def handle_input(self, key):
+        if key == 'a' and self.current_page > 0:
+            self.current_page -= 1
+        elif key == 'd' and self.current_page < self.total_pages - 1:
+            self.current_page += 1
+        elif key in ['q', 'm']:
+            self.app.current_mode = "main_menu"
+            return True
+        return True
+
+    def run(self):
+        prev = -1
+        while True:
+            if self.current_page != prev:
+                self.update_display(self.get_page_image())
+                prev = self.current_page
+            print(f"\nStrona {self.current_page+1}/{self.total_pages}")
+            print("[a/d] ←/→, [q/m] powrót/menu")
+            if self.handle_input(input("Wybierz: ").lower().strip()):
+                if self.app.current_mode == "main_menu":
+                    break
+
+# Main App
+class EbookReader:
+    def __init__(self):
+        self.epd = epd
+        self.empty_image = Image.new('1', (width, height), WHITE)
+        self.current_mode = "main_menu"
+        self.main_menu = MainMenu(self)
+        self.settings_menu = SettingsMenu(self)
+        self.file_manager = FileManager(self)
+        self.reader = Reader(self)
+        self.startup = StartupAnimationScreen(self)
+
+    def run(self):
+        try:
+            self.startup.run()
+            while True:
+                if self.current_mode == "main_menu":
+                    self.main_menu.run()
+                elif self.current_mode == "font_size_menu":
+                    self.settings_menu.font_size_menu()
+                elif self.current_mode == "file_manager":
+                    self.file_manager.run()
+                elif self.current_mode == "reader":
+                    self.reader.run()
+        except KeyboardInterrupt:
+            print("Zamykanie...")
+        finally:
+            self.epd.sleep()
+
+if __name__ == "__main__":
+    app = EbookReader()
+    app.run()
