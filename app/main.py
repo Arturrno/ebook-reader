@@ -238,7 +238,11 @@ class SettingsMenu(MenuScreen):
     def get_font_size_image(self):
         image = self.app.empty_image.copy()
         draw = ImageDraw.Draw(image)
-        y_offset = MENU_PADDING
+
+        y_offset = MENU_PADDING + 30 # Add space for top bar   
+
+        self.draw_top_bar(image, screen_name="Rozmiar czcionki")
+
         for i, size in enumerate(FONT_SIZES):
             if i == self.selected_idx:
                 draw.rectangle((MENU_PADDING, y_offset, width - MENU_PADDING, y_offset + MENU_ITEM_HEIGHT), outline=BLACK)
@@ -284,9 +288,14 @@ class FileManager(Screen):
     def get_file_image(self):
         image = self.app.empty_image.copy()
         draw = ImageDraw.Draw(image)
+
+        self.draw_top_bar(image, screen_name="Wybór książki")
+
+        y_offset = FM_PADDING + 30  # Add space for top bar
+
         start = max(0, self.selected_idx - self.max_items() // 2)
         end = min(len(self.files), start + self.max_items())
-        y_offset = FM_PADDING
+
         for i in range(start, end):
             if i == self.selected_idx:
                 draw.rectangle((FM_PADDING, y_offset, width - FM_PADDING, y_offset + FM_ITEM_HEIGHT), outline=BLACK)
@@ -332,8 +341,10 @@ class Reader(Screen):
         self.pages, self.current_page, self.total_pages = [], 0, 0
 
     def load_epub(self, path):
-        full_text = []
+        full_paragraphs = []
+
         with zipfile.ZipFile(path, 'r') as epub:
+            # Parse container.xml to get OPF path
             with epub.open('META-INF/container.xml') as f:
                 container = BeautifulSoup(f.read(), 'xml')
                 opf_path = container.rootfiles.rootfile['full-path']
@@ -342,36 +353,55 @@ class Reader(Screen):
             with epub.open(opf_path) as f:
                 opf = BeautifulSoup(f.read(), 'xml')
 
-            for item in opf.find_all('item'):
-                if 'application/xhtml+xml' in item['media-type']:
-                    path_in_zip = '/'.join([opf_dir, item['href']]) if opf_dir else item['href']
-                    with epub.open(path_in_zip) as f:
-                        html = BeautifulSoup(f.read(), 'html.parser')
-                        for tag in html(['header', 'footer', 'nav', 'script', 'style']):
-                            tag.decompose()
-                        full_text.append(html.get_text())
+            # Get spine-based reading order
+            item_map = {item['id']: item['href'] for item in opf.find_all('item') if 'application/xhtml+xml' in item.get('media-type', '')}
+            spine_ids = [item['idref'] for item in opf.find_all('itemref')]
+
+            for idref in spine_ids:
+                href = item_map.get(idref)
+                if not href:
+                    continue
+                
+                path_in_zip = f"{opf_dir}/{href}" if opf_dir else href
+
+                with epub.open(path_in_zip) as f:
+                    html = BeautifulSoup(f.read(), 'html.parser')
+                    for tag in html(['header', 'footer', 'nav', 'script', 'style']):
+                        tag.decompose()
+                    paragraphs = [p.get_text(strip=True) for p in html.find_all(['p', 'div']) if p.get_text(strip=True)]
+                    full_paragraphs.extend(paragraphs)
+
+        # Text layout
+        dummy_img = Image.new('RGB', (1, 1))
+        draw = ImageDraw.Draw(dummy_img)
+        font = fonts[settings['font_id']]
+        line_height = font.getbbox("A")[3] + RD_LINE_SPACING
+        lines_per_page = (height - RD_TOP_MARGIN - RD_BOTTOM_MARGIN) // line_height
+        max_width = width - 2 * RD_SIDE_MARGIN
 
         self.pages = []
-        current, char_count = [], 0
-        line_height = FONT_SIZES[settings['font_id']] + RD_LINE_SPACING
-        lines_per_page = (height - RD_TOP_MARGIN - RD_BOTTOM_MARGIN) // line_height
+        current_lines = []
 
-        for para in full_text:
-            for word in para.split():
-                if len(current) == 0 or len(current[-1]) + len(word) + 1 <= RD_CHARS_PER_LINE:
-                    if not current:
-                        current.append(word)
-                    else:
-                        current[-1] += " " + word
+        for para in full_paragraphs:
+            words = para.split()
+            line = ""
+            for word in words:
+                test_line = f"{line} {word}".strip()
+                if draw.textlength(test_line, font=font) <= max_width:
+                    line = test_line
                 else:
-                    if len(current) >= lines_per_page:
-                        self.pages.append("\n".join(current))
-                        current, char_count = [], 0
-                    current.append(word)
+                    current_lines.append(line)
+                    line = word
+            if line:
+                current_lines.append(line)
+            current_lines.append("")  # paragraph break
 
-            if current:
-                self.pages.append("\n".join(current))
-                current = []
+            while len(current_lines) >= lines_per_page:
+                self.pages.append("\n".join(current_lines[:lines_per_page]))
+                current_lines = current_lines[lines_per_page:]
+
+        if current_lines:
+            self.pages.append("\n".join(current_lines))
 
         self.current_page = 0
         self.total_pages = len(self.pages)
@@ -381,7 +411,7 @@ class Reader(Screen):
         draw = ImageDraw.Draw(image)
         font = fonts[settings['font_id']]
 
-        # Pasek statusu
+        # Top bar
         draw.rectangle((0, 0, width, RD_STATUS_BAR_HEIGHT), fill=WHITE, outline=BLACK)
         page_info = f"{self.current_page+1}/{self.total_pages}"
         draw.text((RD_SIDE_MARGIN, 10), page_info, font=status_font, fill=BLACK)
@@ -390,16 +420,18 @@ class Reader(Screen):
         battery_width = draw.textlength(battery_info, font=status_font)
         draw.text((width - RD_SIDE_MARGIN - battery_width, 10), battery_info, font=status_font, fill=BLACK)
 
-        progress_width = width - 2*RD_SIDE_MARGIN - draw.textlength(page_info, font=status_font) - battery_width - 20
+        progress_width = width - 2 * RD_SIDE_MARGIN - draw.textlength(page_info, font=status_font) - battery_width - 20
         progress_x = RD_SIDE_MARGIN + draw.textlength(page_info, font=status_font) + 10
-        progress = (self.current_page+1) / self.total_pages
+        progress = (self.current_page + 1) / self.total_pages
         draw.rectangle((progress_x, 17, progress_x + progress_width, 23), outline=BLACK)
         draw.rectangle((progress_x, 17, progress_x + int(progress_width * progress), 23), fill=BLACK)
 
+        # Text body
         y = RD_TOP_MARGIN
         for line in self.pages[self.current_page].split('\n'):
             draw.text((RD_SIDE_MARGIN, y), line, font=font, fill=BLACK)
-            y += font.size + RD_LINE_SPACING
+            line_height = font.getbbox("A")[3] + RD_LINE_SPACING
+            y += line_height
         return image
 
     def handle_input(self, key):
@@ -423,6 +455,7 @@ class Reader(Screen):
             if self.handle_input(input("Wybierz: ").lower().strip()):
                 if self.app.current_mode == "main_menu":
                     break
+
 
 # Main App
 class EbookReader:
