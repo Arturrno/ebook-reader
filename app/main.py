@@ -7,6 +7,7 @@ import textwrap
 from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 import platform
+import json
 
 # Set up e-paper display
 if platform.system() == "Windows":
@@ -18,7 +19,16 @@ else:
     from waveshare_epd import epd7in5_V2
     EPD = epd7in5_V2.EPD
     epd = epd7in5_V2.EPD()
+    runningDir = "/home/pi"
     bookshelfPath = "/home/pi/Bookshelf"
+
+# Set up book progress tracking
+progress_path = os.path.join(runningDir, "reading_progress.json")
+if os.path.exists(progress_path):
+    with open(progress_path, 'r') as f:
+        reading_progress = json.load(f)
+else:
+    reading_progress = {}
 
 # Init
 epd.init()
@@ -29,14 +39,14 @@ width, height = 480, 800
 BLACK, WHITE = 0, 255
 FONT_SIZES = [18, 22, 26, 30]
 
-MENU_ITEMS = ["Czytaj książkę", "Rozmiar czcionki", "Inwersja kolorów", "Wyłącz urządzenie"]
+MENU_ITEMS = ["Czytaj książkę", "Rozmiar czcionki", "Wyłącz urządzenie"]
 MENU_ITEM_HEIGHT, MENU_PADDING = 50, 10
 FM_ITEM_HEIGHT, FM_PADDING = 40, 10
 RD_STATUS_BAR_HEIGHT, RD_TOP_MARGIN = 40, 50
 RD_BOTTOM_MARGIN, RD_SIDE_MARGIN = 20, 20
 RD_LINE_SPACING, RD_CHARS_PER_LINE = 8, 40
 
-settings = {'font_id': 1, 'inverted': False, 'last_book': None}
+settings = {'font_id': 1, 'last_book': None}
 
 fonts = {}
 
@@ -65,9 +75,6 @@ class Screen:
             self.app.epd.init_part()
         else:
             self.app.epd.init()
-
-        if settings['inverted']:
-            image = Image.eval(image, lambda x: 255 - x)
 
         rotated_image = image.rotate(0)
         self.app.epd.display(self.app.epd.getbuffer(rotated_image))
@@ -212,8 +219,6 @@ class MainMenu(MenuScreen):
             elif self.selected_idx == 1:
                 self.app.current_mode = "font_size_menu"
             elif self.selected_idx == 2:
-                settings['inverted'] = not settings['inverted']
-            elif self.selected_idx == 3:
                 self.app.epd.sleep()
                 sys.exit(0)
             return True
@@ -339,9 +344,17 @@ class Reader(Screen):
     def __init__(self, app):
         super().__init__(app)
         self.pages, self.current_page, self.total_pages = [], 0, 0
+        self.current_book_path = None
+
+    def save_progress(self, book_path):
+        reading_progress[book_path] = self.current_page
+        with open(progress_path, 'w') as f:
+            json.dump(reading_progress, f)
 
     def load_epub(self, path):
         full_paragraphs = []
+
+        self.current_book_path = path
 
         with zipfile.ZipFile(path, 'r') as epub:
             # Parse container.xml to get OPF path
@@ -404,6 +417,13 @@ class Reader(Screen):
             self.pages.append("\n".join(current_lines))
 
         self.current_page = 0
+
+        # Resume from saved page if available
+        if path in reading_progress:
+            saved_page = reading_progress[path]
+            if 0 <= saved_page < self.total_pages:
+                self.current_page = saved_page
+
         self.total_pages = len(self.pages)
 
     def get_page_image(self):
@@ -455,6 +475,7 @@ class Reader(Screen):
             if self.handle_input(input("Wybierz: ").lower().strip()):
                 if self.app.current_mode == "main_menu":
                     break
+            self.save_progress(self.app.reader.current_book_path)
 
 
 # Main App
