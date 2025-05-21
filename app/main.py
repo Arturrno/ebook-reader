@@ -37,33 +37,39 @@ epd.Clear()
 # Constants
 width, height = 480, 800
 BLACK, WHITE = 0, 255
-FONT_SIZES = [18, 22, 26, 30]
 
-MENU_ITEMS = ["Czytaj książkę", "Rozmiar czcionki", "Wyłącz urządzenie"]
+MENU_ITEMS = ["Czytaj książkę", "Rozmiar czcionki", "Czcionka", "Wyłącz urządzenie"]
 MENU_ITEM_HEIGHT, MENU_PADDING = 50, 10
 FM_ITEM_HEIGHT, FM_PADDING = 40, 10
 RD_STATUS_BAR_HEIGHT, RD_TOP_MARGIN = 40, 50
 RD_BOTTOM_MARGIN, RD_SIDE_MARGIN = 20, 20
 RD_LINE_SPACING, RD_CHARS_PER_LINE = 8, 40
 
-settings = {'font_id': 1, 'last_book': None}
+FONT_SIZES = [18, 22, 26, 30]
+DEFAULT_FONT_SIZE = 22
+settings = {
+    'font_name': 'DejaVuSans.ttf',
+    'font_size': DEFAULT_FONT_SIZE,
+    'last_book': None
+}
 
-fonts = {}
-
-fontPath = os.path.join(runningDir, "DejaVuSans.ttf")
+fontDirectory = os.path.join(runningDir, "Fonts")
+fontPath = os.path.join(fontDirectory, settings['font_name'])
 if not os.path.exists(fontPath):
     print(f"Font file not found: {fontPath}")
     sys.exit(1)
 
-for i, size in enumerate(FONT_SIZES):
+available_fonts = sorted([f for f in os.listdir(fontDirectory) if f.lower().endswith('.ttf')])
+
+# Utility function for loading fonts
+def load_font(font_name, font_size):
     try:
-        fonts[i] = ImageFont.truetype(fontPath, size)
+        return ImageFont.truetype(os.path.join(fontDirectory, font_name), font_size)
     except:
-        fonts[i] = ImageFont.load_default()
-try:
-    status_font = ImageFont.truetype(fontPath, 14)
-except:
-    status_font = ImageFont.load_default()
+        return ImageFont.load_default()
+
+# Status font
+status_font = load_font(settings['font_name'], 14)
 
 # Base screen with shared display logic
 class Screen:
@@ -83,8 +89,8 @@ class Screen:
         draw = ImageDraw.Draw(image)
         bar_height = 30
         padding = 10
-        font = fonts[settings['font_id']]
-        bold_font = fonts.get("bold", font)  # fallback if bold not defined
+        font = load_font(settings['font_name'], settings['font_size'])
+        bold_font = font  # or define/load a bold variant
 
         # Font metrics for vertical centering
         ascent, descent = font.getmetrics()
@@ -199,7 +205,7 @@ class MainMenu(MenuScreen):
         for i in range(start, end):
             if i == self.selected_idx:
                 draw.rectangle((MENU_PADDING, y_offset, width - MENU_PADDING, y_offset + MENU_ITEM_HEIGHT), outline=BLACK)
-            draw.text((2*MENU_PADDING, y_offset + 15), MENU_ITEMS[i], font=fonts[settings['font_id']], fill=BLACK)
+            draw.text((2*MENU_PADDING, y_offset + 15), MENU_ITEMS[i], font=load_font(settings['font_name'], settings['font_size']), fill=BLACK)
             y_offset += MENU_ITEM_HEIGHT
 
         return image
@@ -219,6 +225,8 @@ class MainMenu(MenuScreen):
             elif self.selected_idx == 1:
                 self.app.current_mode = "font_size_menu"
             elif self.selected_idx == 2:
+                self.app.current_mode = "font_choice_menu"
+            elif self.selected_idx == 3:
                 self.app.epd.sleep()
                 sys.exit(0)
             return True
@@ -238,21 +246,26 @@ class MainMenu(MenuScreen):
 class SettingsMenu(MenuScreen):
     def __init__(self, app):
         super().__init__(app)
-        self.selected_idx = settings['font_id']
+        self.selected_idx = FONT_SIZES.index(settings['font_size'])
 
     def get_font_size_image(self):
         image = self.app.empty_image.copy()
         draw = ImageDraw.Draw(image)
 
-        y_offset = MENU_PADDING + 30 # Add space for top bar   
-
+        y_offset = MENU_PADDING + 30
         self.draw_top_bar(image, screen_name="Rozmiar czcionki")
 
         for i, size in enumerate(FONT_SIZES):
             if i == self.selected_idx:
                 draw.rectangle((MENU_PADDING, y_offset, width - MENU_PADDING, y_offset + MENU_ITEM_HEIGHT), outline=BLACK)
-            draw.text((2*MENU_PADDING, y_offset + 15), f"Rozmiar {size}px", font=fonts[i], fill=BLACK)
+            draw.text(
+                (2*MENU_PADDING, y_offset + 15),
+                f"Rozmiar {size}px",
+                font=load_font(settings['font_name'], size),
+                fill=BLACK
+            )
             y_offset += MENU_ITEM_HEIGHT
+
         draw.text((MENU_PADDING, height - 30), "Enter: wybierz  q: powrót", font=status_font, fill=BLACK)
         return image
 
@@ -262,13 +275,13 @@ class SettingsMenu(MenuScreen):
         elif key == 's' and self.selected_idx < len(FONT_SIZES) - 1:
             self.selected_idx += 1
         elif key == '':
-            settings['font_id'] = self.selected_idx
+            settings['font_size'] = FONT_SIZES[self.selected_idx]
             self.app.current_mode = "main_menu"
             return True
         elif key == 'q':
             self.app.current_mode = "main_menu"
             return True
-        return True
+        return False
 
     def font_size_menu(self):
         prev = -1
@@ -277,6 +290,56 @@ class SettingsMenu(MenuScreen):
                 self.update_display(self.get_font_size_image(), partial=True)
                 prev = self.selected_idx
             print("\nWybierz rozmiar: [w/s] wybór, [Enter] zatwierdź, [q] powrót")
+            if self.handle_input(input("Wybierz: ").lower().strip()):
+                break
+
+class FontMenu(MenuScreen):
+    def __init__(self, app):
+        super().__init__(app)
+        self.fonts = available_fonts
+        self.selected_idx = self.fonts.index(settings['font_name']) if settings['font_name'] in self.fonts else 0
+
+    def get_font_choice_image(self):
+        image = self.app.empty_image.copy()
+        draw = ImageDraw.Draw(image)
+
+        self.draw_top_bar(image, screen_name="Czcionka")
+        y_offset = MENU_PADDING + 30
+        for i, font_name in enumerate(self.fonts):
+            if i == self.selected_idx:
+                draw.rectangle((MENU_PADDING, y_offset, width - MENU_PADDING, y_offset + MENU_ITEM_HEIGHT), outline=BLACK)
+            draw.text(
+                (2*MENU_PADDING, y_offset + 15),
+                font_name,
+                font=load_font(font_name, settings['font_size']),
+                fill=BLACK
+            )
+            y_offset += MENU_ITEM_HEIGHT
+
+        draw.text((MENU_PADDING, height - 30), "Enter: wybierz  q: powrót", font=status_font, fill=BLACK)
+        return image
+
+    def handle_input(self, key):
+        if key == 'w' and self.selected_idx > 0:
+            self.selected_idx -= 1
+        elif key == 's' and self.selected_idx < len(self.fonts) - 1:
+            self.selected_idx += 1
+        elif key == '':
+            settings['font_name'] = self.fonts[self.selected_idx]
+            self.app.current_mode = "main_menu"
+            return True
+        elif key == 'q':
+            self.app.current_mode = "main_menu"
+            return True
+        return False
+    
+    def font_choice_menu(self):
+        prev = -1
+        while True:
+            if self.selected_idx != prev:
+                self.update_display(self.get_font_choice_image(), partial=True)
+                prev = self.selected_idx
+            print("\nWybierz czcionkę: [w/s] wybór, [Enter] zatwierdź, [q] powrót")
             if self.handle_input(input("Wybierz: ").lower().strip()):
                 break
 
@@ -305,7 +368,7 @@ class FileManager(Screen):
             if i == self.selected_idx:
                 draw.rectangle((FM_PADDING, y_offset, width - FM_PADDING, y_offset + FM_ITEM_HEIGHT), outline=BLACK)
             name = self.files[i][:27] + "..." if len(self.files[i]) > 30 else self.files[i]
-            draw.text((2*FM_PADDING, y_offset + 10), name, font=fonts[settings['font_id']], fill=BLACK)
+            draw.text((2*FM_PADDING, y_offset + 10), name, font=load_font(settings['font_name'], settings['font_size']), fill=BLACK)
             y_offset += FM_ITEM_HEIGHT
         draw.text((FM_PADDING, height - 30), "W/S: wybierz  Enter: otwórz  q: powrót", font=status_font, fill=BLACK)
         return image
@@ -387,7 +450,7 @@ class Reader(Screen):
         # Text layout
         dummy_img = Image.new('RGB', (1, 1))
         draw = ImageDraw.Draw(dummy_img)
-        font = fonts[settings['font_id']]
+        font = load_font(settings['font_name'], settings['font_size'])
         line_height = font.getbbox("A")[3] + RD_LINE_SPACING
         lines_per_page = (height - RD_TOP_MARGIN - RD_BOTTOM_MARGIN) // line_height
         max_width = width - 2 * RD_SIDE_MARGIN
@@ -429,7 +492,7 @@ class Reader(Screen):
     def get_page_image(self):
         image = self.app.empty_image.copy()
         draw = ImageDraw.Draw(image)
-        font = fonts[settings['font_id']]
+        font = load_font(settings['font_name'], settings['font_size'])
 
         # Top bar
         draw.rectangle((0, 0, width, RD_STATUS_BAR_HEIGHT), fill=WHITE, outline=BLACK)
@@ -496,8 +559,10 @@ class EbookReader:
             while True:
                 if self.current_mode == "main_menu":
                     self.main_menu.run()
-                elif self.current_mode == "font_size_menu":
-                    self.settings_menu.font_size_menu()
+                if self.current_mode == "font_size_menu":
+                    SettingsMenu(self).font_size_menu()
+                elif self.current_mode == "font_choice_menu":
+                    FontMenu(self).font_choice_menu()
                 elif self.current_mode == "file_manager":
                     self.file_manager.run()
                 elif self.current_mode == "reader":
