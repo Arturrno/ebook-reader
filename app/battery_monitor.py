@@ -1,8 +1,15 @@
 # battery_monitor.py
 import time
-import board
-import adafruit_ads1x15.ads1115 as ADS
-from adafruit_ads1x15.analog_in import AnalogIn
+
+# Sprawdzenie, czy używać sprzętu (ADS1115) czy trybu mock
+USE_HARDWARE = 0
+
+if USE_HARDWARE:
+    import board
+    import adafruit_ads1x15.ads1115 as ADS
+    from adafruit_ads1x15.analog_in import AnalogIn
+else:
+    print("⚠️  Running in mock mode (no hardware).")
 
 def calculate_battery_percentage(measured_voltage):
     """
@@ -15,6 +22,7 @@ def calculate_battery_percentage(measured_voltage):
     Returns:
         float: Procent naładowania (0-100%).
     """
+    
     actual_voltage = measured_voltage * 2
     FULL_CHARGE_VOLTAGE = 4.2  # 100%
     EMPTY_VOLTAGE = 3.0         # 0%
@@ -25,11 +33,14 @@ def calculate_battery_percentage(measured_voltage):
     return round(percentage)
 
 def read_battery_voltage():
-    """Inicjalizuje ADS1115 i zwraca napięcie z A3."""
-    i2c = board.I2C()
-    ads = ADS.ADS1115(i2c)
-    battery_channel = AnalogIn(ads, ADS.P3)
-    return battery_channel.voltage
+    if USE_HARDWARE:
+        i2c = board.I2C()
+        ads = ADS.ADS1115(i2c)
+        battery_channel = AnalogIn(ads, ADS.P3)
+        return battery_channel.voltage
+    else:
+        # Zwróć przykładowe napięcie w trybie testowym
+        return 1.75  # co odpowiada ~3.3V po przemnożeniu x2
 
 if __name__ == "__main__":
     # Testowanie modułu (uruchamiane tylko przy bezpośrednim wykonywaniu pliku)

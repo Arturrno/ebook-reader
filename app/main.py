@@ -8,6 +8,8 @@ from bs4 import BeautifulSoup
 from PIL import Image, ImageDraw, ImageFont
 import platform
 import json
+from battery_monitor import calculate_battery_percentage, read_battery_voltage 
+from button_pressed import is_button_pressed
 
 # Set up e-paper display
 if platform.system() == "Windows":
@@ -30,9 +32,15 @@ if os.path.exists(progress_path):
 else:
     reading_progress = {}
 
-# Init
+# Initialize the e-paper display
 epd.init()
 epd.Clear()
+
+# GPIO pins
+BUTTON_UP = 16
+BUTTON_DOWN = 6
+BUTTON_RIGHT = 19
+BUTTON_LEFT = 21
 
 # Constants
 width, height = 480, 800
@@ -96,8 +104,9 @@ class Screen:
         ascent, descent = font.getmetrics()
         text_height = ascent + abs(descent)
 
-        # Battery
-        battery_pct = 73  # Example battery percentage
+        # Battery 
+        battery_pct = calculate_battery_percentage(read_battery_voltage())
+
         battery_text = f"{battery_pct}%"
         battery_text_width = draw.textlength(battery_text, font=bold_font)
         battery_logo_width = 20
@@ -238,10 +247,19 @@ class MainMenu(MenuScreen):
             if self.selected_idx != prev_idx:
                 self.update_display(self.get_menu_image(), partial=True)
                 prev_idx = self.selected_idx
-            print("\nMenu główne: [w] góra, [s] dół, [Enter] wybierz")
-            key = input("Wybierz: ")
-            if self.handle_input(key.lower().strip()):
-                break
+
+            print("\nWybierz opcję: [w/s] góra/dół, [Enter] wybór")
+            #key = input("Wybierz: ")
+            #if self.handle_input(key.lower().strip()):
+            #   break
+
+            if is_button_pressed(BUTTON_UP):
+                self.handle_input('w')
+            elif is_button_pressed(BUTTON_DOWN):
+                self.handle_input('s')
+            elif is_button_pressed(BUTTON_RIGHT):
+                if self.handle_input(''):
+                    break
 
 class SettingsMenu(MenuScreen):
     def __init__(self, app):
@@ -499,7 +517,7 @@ class Reader(Screen):
         page_info = f"{self.current_page+1}/{self.total_pages}"
         draw.text((RD_SIDE_MARGIN, 10), page_info, font=status_font, fill=BLACK)
 
-        battery_info = "78%"
+        battery_info = calculate_battery_percentage(read_battery_voltage()) + "%"
         battery_width = draw.textlength(battery_info, font=status_font)
         draw.text((width - RD_SIDE_MARGIN - battery_width, 10), battery_info, font=status_font, fill=BLACK)
 
