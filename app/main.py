@@ -190,7 +190,27 @@ class StartupAnimationScreen(Screen):
 
 # Menus
 class MenuScreen(Screen):
-    def handle_input(self, key): pass
+    def handle_input(self, key):
+        if key == 'w' and self.selected_idx > 0:
+            self.selected_idx -= 1
+        elif key == 's' and self.selected_idx < len(self.get_items()) - 1:
+            self.selected_idx += 1
+        elif key == 'd':
+            return self.select_item()
+        elif key == 'a':
+            return self.cancel()
+        return True
+
+    def get_items(self):
+        raise NotImplementedError("Subclasses must implement get_items")
+
+    def select_item(self):
+        raise NotImplementedError("Subclasses must implement select_item")
+
+    def cancel(self):
+        self.app.current_mode = "main_menu"
+        return True
+
     def run(self): pass
 
 class MainMenu(MenuScreen):
@@ -223,23 +243,23 @@ class MainMenu(MenuScreen):
         # Adjust for the top bar
         return (height - 2*MENU_PADDING - 30) // MENU_ITEM_HEIGHT
 
-    def handle_input(self, key):
-        if key == 'w' and self.selected_idx > 0:
-            self.selected_idx -= 1
-        elif key == 's' and self.selected_idx < len(MENU_ITEMS) - 1:
-            self.selected_idx += 1
-        elif key == '':
-            if self.selected_idx == 0:
-                self.app.current_mode = "file_manager"
-            elif self.selected_idx == 1:
-                self.app.current_mode = "font_size_menu"
-            elif self.selected_idx == 2:
-                self.app.current_mode = "font_choice_menu"
-            elif self.selected_idx == 3:
-                self.app.epd.sleep()
-                sys.exit(0)
-            return True
+    def get_items(self):
+        return MENU_ITEMS
+
+    def select_item(self):
+        if self.selected_idx == 0:
+            self.app.current_mode = "file_manager"
+        elif self.selected_idx == 1:
+            self.app.current_mode = "font_size_menu"
+        elif self.selected_idx == 2:
+            self.app.current_mode = "font_choice_menu"
+        elif self.selected_idx == 3:
+            self.app.epd.sleep()
+            sys.exit(0)
         return True
+
+    def cancel(self):
+        return True  # Do nothing or stay on the same menu
 
     def run(self):
         prev_idx = -1
@@ -249,19 +269,12 @@ class MainMenu(MenuScreen):
                 prev_idx = self.selected_idx
 
             print("\nWybierz opcję: [w/s] góra/dół, [Enter] wybór")
-            #key = input("Wybierz: ")
-            #if self.handle_input(key.lower().strip()):
-            #   break
+            print(self.selected_idx)
+            key = input("Wybierz: ")
+            if self.handle_input(key.lower().strip()):
+                break
 
-            if is_button_pressed(BUTTON_UP):
-                self.handle_input('w')
-            elif is_button_pressed(BUTTON_DOWN):
-                self.handle_input('s')
-            elif is_button_pressed(BUTTON_RIGHT):
-                if self.handle_input(''):
-                    break
-
-class SettingsMenu(MenuScreen):
+class FontSizeMenu(MenuScreen):
     def __init__(self, app):
         super().__init__(app)
         self.selected_idx = FONT_SIZES.index(settings['font_size'])
@@ -287,19 +300,13 @@ class SettingsMenu(MenuScreen):
         draw.text((MENU_PADDING, height - 30), "Enter: wybierz  q: powrót", font=status_font, fill=BLACK)
         return image
 
-    def handle_input(self, key):
-        if key == 'w' and self.selected_idx > 0:
-            self.selected_idx -= 1
-        elif key == 's' and self.selected_idx < len(FONT_SIZES) - 1:
-            self.selected_idx += 1
-        elif key == '':
-            settings['font_size'] = FONT_SIZES[self.selected_idx]
-            self.app.current_mode = "main_menu"
-            return True
-        elif key == 'q':
-            self.app.current_mode = "main_menu"
-            return True
-        return False
+    def get_items(self):
+        return FONT_SIZES
+
+    def select_item(self):
+        settings['font_size'] = FONT_SIZES[self.selected_idx]
+        self.app.current_mode = "main_menu"
+        return True
 
     def font_size_menu(self):
         prev = -1
@@ -307,8 +314,11 @@ class SettingsMenu(MenuScreen):
             if self.selected_idx != prev:
                 self.update_display(self.get_font_size_image(), partial=True)
                 prev = self.selected_idx
-            print("\nWybierz rozmiar: [w/s] wybór, [Enter] zatwierdź, [q] powrót")
-            if self.handle_input(input("Wybierz: ").lower().strip()):
+                
+            print("\nWybierz opcję: [w/s] góra/dół, [Enter] wybór")
+            print(self.selected_idx)
+            key = input("Wybierz: ")
+            if self.handle_input(key.lower().strip()):
                 break
 
 class FontMenu(MenuScreen):
@@ -337,20 +347,14 @@ class FontMenu(MenuScreen):
         draw.text((MENU_PADDING, height - 30), "Enter: wybierz  q: powrót", font=status_font, fill=BLACK)
         return image
 
-    def handle_input(self, key):
-        if key == 'w' and self.selected_idx > 0:
-            self.selected_idx -= 1
-        elif key == 's' and self.selected_idx < len(self.fonts) - 1:
-            self.selected_idx += 1
-        elif key == '':
-            settings['font_name'] = self.fonts[self.selected_idx]
-            self.app.current_mode = "main_menu"
-            return True
-        elif key == 'q':
-            self.app.current_mode = "main_menu"
-            return True
-        return False
-    
+    def get_items(self):
+        return self.fonts
+
+    def select_item(self):
+        settings['font_name'] = self.fonts[self.selected_idx]
+        self.app.current_mode = "main_menu"
+        return True
+  
     def font_choice_menu(self):
         prev = -1
         while True:
@@ -362,7 +366,7 @@ class FontMenu(MenuScreen):
                 break
 
 # File manager
-class FileManager(Screen):
+class FileManager(MenuScreen):
     def __init__(self, app):
         super().__init__(app)
         self.files = self.list_ebooks(bookshelfPath)
@@ -371,13 +375,23 @@ class FileManager(Screen):
     def list_ebooks(self, directory):
         return sorted([f for f in os.listdir(directory) if f.lower().endswith(('.epub', '.pdf'))])
 
+    def get_items(self):
+        return self.files
+
+    def select_item(self):
+        filepath = os.path.join(bookshelfPath, self.files[self.selected_idx])
+        settings['last_book'] = filepath
+        self.app.reader.load_epub(filepath)
+        self.app.current_mode = "reader"
+        return True
+
     def get_file_image(self):
         image = self.app.empty_image.copy()
         draw = ImageDraw.Draw(image)
 
         self.draw_top_bar(image, screen_name="Wybór książki")
 
-        y_offset = FM_PADDING + 30  # Add space for top bar
+        y_offset = FM_PADDING + 30
 
         start = max(0, self.selected_idx - self.max_items() // 2)
         end = min(len(self.files), start + self.max_items())
@@ -386,29 +400,25 @@ class FileManager(Screen):
             if i == self.selected_idx:
                 draw.rectangle((FM_PADDING, y_offset, width - FM_PADDING, y_offset + FM_ITEM_HEIGHT), outline=BLACK)
             name = self.files[i][:27] + "..." if len(self.files[i]) > 30 else self.files[i]
-            draw.text((2*FM_PADDING, y_offset + 10), name, font=load_font(settings['font_name'], settings['font_size']), fill=BLACK)
+            draw.text(
+                (2 * FM_PADDING, y_offset + 10),
+                name,
+                font=load_font(settings['font_name'], settings['font_size']),
+                fill=BLACK
+            )
             y_offset += FM_ITEM_HEIGHT
-        draw.text((FM_PADDING, height - 30), "W/S: wybierz  Enter: otwórz  q: powrót", font=status_font, fill=BLACK)
+
+        draw.text(
+            (FM_PADDING, height - 30),
+            "W/S: góra/dół  D: otwórz  A: powrót",
+            font=status_font,
+            fill=BLACK
+        )
+
         return image
 
     def max_items(self):
-        return (height - 2*FM_PADDING) // FM_ITEM_HEIGHT
-
-    def handle_input(self, key):
-        if key == 'w' and self.selected_idx > 0:
-            self.selected_idx -= 1
-        elif key == 's' and self.selected_idx < len(self.files) - 1:
-            self.selected_idx += 1
-        elif key == '':
-            filepath = os.path.join(bookshelfPath, self.files[self.selected_idx])
-            settings['last_book'] = filepath
-            self.app.reader.load_epub(filepath)
-            self.app.current_mode = "reader"
-            return True
-        elif key == 'q':
-            self.app.current_mode = "main_menu"
-            return True
-        return True
+        return (height - 2 * FM_PADDING) // FM_ITEM_HEIGHT
 
     def run(self):
         prev_idx = -1
@@ -416,9 +426,13 @@ class FileManager(Screen):
             if self.selected_idx != prev_idx:
                 self.update_display(self.get_file_image(), partial=True)
                 prev_idx = self.selected_idx
-            print("\nWybierz książkę: [w/s] góra/dół, [Enter] otwórz, [q] powrót")
-            if self.handle_input(input("Wybierz: ").lower().strip()):
+            print("\nWybierz książkę: [w/s] góra/dół, [d] otwórz, [a] powrót")
+            key = input("Wybierz: ").lower().strip()
+            if not key:
+                continue
+            if self.handle_input(key):
                 break
+
 
 # Reader
 class Reader(Screen):
@@ -517,7 +531,8 @@ class Reader(Screen):
         page_info = f"{self.current_page+1}/{self.total_pages}"
         draw.text((RD_SIDE_MARGIN, 10), page_info, font=status_font, fill=BLACK)
 
-        battery_info = calculate_battery_percentage(read_battery_voltage()) + "%"
+        #battery_info = calculate_battery_percentage(read_battery_voltage())
+        battery_info = "62%"
         battery_width = draw.textlength(battery_info, font=status_font)
         draw.text((width - RD_SIDE_MARGIN - battery_width, 10), battery_info, font=status_font, fill=BLACK)
 
@@ -536,11 +551,11 @@ class Reader(Screen):
         return image
 
     def handle_input(self, key):
-        if key == 'a' and self.current_page > 0:
+        if key == 's' and self.current_page > 0:
             self.current_page -= 1
-        elif key == 'd' and self.current_page < self.total_pages - 1:
+        elif key == 'w' and self.current_page < self.total_pages - 1:
             self.current_page += 1
-        elif key in ['q', 'm']:
+        elif key in ['a']:
             self.app.current_mode = "main_menu"
             return True
         return True
@@ -552,7 +567,7 @@ class Reader(Screen):
                 self.update_display(self.get_page_image())
                 prev = self.current_page
             print(f"\nStrona {self.current_page+1}/{self.total_pages}")
-            print("[a/d] ←/→, [q/m] powrót/menu")
+            print("[s/w] ←/→, [a] powrót/menu")
             if self.handle_input(input("Wybierz: ").lower().strip()):
                 if self.app.current_mode == "main_menu":
                     break
@@ -566,7 +581,8 @@ class EbookReader:
         self.empty_image = Image.new('1', (width, height), WHITE)
         self.current_mode = "main_menu"
         self.main_menu = MainMenu(self)
-        self.settings_menu = SettingsMenu(self)
+        self.fontsize_menu = FontSizeMenu(self)
+        self.font_menu = FontMenu(self)
         self.file_manager = FileManager(self)
         self.reader = Reader(self)
         self.startup = StartupAnimationScreen(self)
@@ -578,9 +594,9 @@ class EbookReader:
                 if self.current_mode == "main_menu":
                     self.main_menu.run()
                 if self.current_mode == "font_size_menu":
-                    SettingsMenu(self).font_size_menu()
+                    self.fontsize_menu.font_size_menu()
                 elif self.current_mode == "font_choice_menu":
-                    FontMenu(self).font_choice_menu()
+                    self.font_menu.font_choice_menu()
                 elif self.current_mode == "file_manager":
                     self.file_manager.run()
                 elif self.current_mode == "reader":
