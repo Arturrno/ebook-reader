@@ -1,4 +1,4 @@
-# 📘 ebook-reader
+# 📘 ebook reader
 
 A Python-based e-paper display **emulator** for a Raspberry Pi eBook project. This tool simulates how your UI and book navigation would look on a real e-paper device—ideal for development and testing on Windows before deploying to real hardware.
 This emulator mimics the menu system and display behavior of an e-paper-based eBook reader controlled via GPIO buttons. It allows fast iteration without needing a physical Raspberry Pi or display connected.
